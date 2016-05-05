@@ -1,317 +1,221 @@
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Simple Delaunay Lib https://raw.githubusercontent.com/ironwallaby/delaunay/master/delaunay.js //
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
-var Delaunay;
-
-(function() {
-  "use strict";
-
-  var EPSILON = 1.0 / 1048576.0;
-
-  function supertriangle(vertices) {
-    var xmin = Number.POSITIVE_INFINITY,
-        ymin = Number.POSITIVE_INFINITY,
-        xmax = Number.NEGATIVE_INFINITY,
-        ymax = Number.NEGATIVE_INFINITY,
-        i, dx, dy, dmax, xmid, ymid;
-
-    for(i = vertices.length; i--; ) {
-      if(vertices[i][0] < xmin) xmin = vertices[i][0];
-      if(vertices[i][0] > xmax) xmax = vertices[i][0];
-      if(vertices[i][1] < ymin) ymin = vertices[i][1];
-      if(vertices[i][1] > ymax) ymax = vertices[i][1];
-    }
-
-    dx = xmax - xmin;
-    dy = ymax - ymin;
-    dmax = Math.max(dx, dy);
-    xmid = xmin + dx * 0.5;
-    ymid = ymin + dy * 0.5;
-
-    return [
-      [xmid - 20 * dmax, ymid -      dmax],
-      [xmid            , ymid + 20 * dmax],
-      [xmid + 20 * dmax, ymid -      dmax]
-    ];
-  }
-
-  function circumcircle(vertices, i, j, k) {
-    var x1 = vertices[i][0],
-        y1 = vertices[i][1],
-        x2 = vertices[j][0],
-        y2 = vertices[j][1],
-        x3 = vertices[k][0],
-        y3 = vertices[k][1],
-        fabsy1y2 = Math.abs(y1 - y2),
-        fabsy2y3 = Math.abs(y2 - y3),
-        xc, yc, m1, m2, mx1, mx2, my1, my2, dx, dy;
-
-    /* Check for coincident points */
-    if(fabsy1y2 < EPSILON && fabsy2y3 < EPSILON)
-      throw new Error("Eek! Coincident points!");
-
-    if(fabsy1y2 < EPSILON) {
-      m2  = -((x3 - x2) / (y3 - y2));
-      mx2 = (x2 + x3) / 2.0;
-      my2 = (y2 + y3) / 2.0;
-      xc  = (x2 + x1) / 2.0;
-      yc  = m2 * (xc - mx2) + my2;
-    }
-
-    else if(fabsy2y3 < EPSILON) {
-      m1  = -((x2 - x1) / (y2 - y1));
-      mx1 = (x1 + x2) / 2.0;
-      my1 = (y1 + y2) / 2.0;
-      xc  = (x3 + x2) / 2.0;
-      yc  = m1 * (xc - mx1) + my1;
-    }
-
-    else {
-      m1  = -((x2 - x1) / (y2 - y1));
-      m2  = -((x3 - x2) / (y3 - y2));
-      mx1 = (x1 + x2) / 2.0;
-      mx2 = (x2 + x3) / 2.0;
-      my1 = (y1 + y2) / 2.0;
-      my2 = (y2 + y3) / 2.0;
-      xc  = (m1 * mx1 - m2 * mx2 + my2 - my1) / (m1 - m2);
-      yc  = (fabsy1y2 > fabsy2y3) ?
-        m1 * (xc - mx1) + my1 :
-        m2 * (xc - mx2) + my2;
-    }
-
-    dx = x2 - xc;
-    dy = y2 - yc;
-    return {i: i, j: j, k: k, x: xc, y: yc, r: dx * dx + dy * dy};
-  }
-
-  function dedup(edges) {
-    var i, j, a, b, m, n;
-
-    for(j = edges.length; j; ) {
-      b = edges[--j];
-      a = edges[--j];
-
-      for(i = j; i; ) {
-        n = edges[--i];
-        m = edges[--i];
-
-        if((a === m && b === n) || (a === n && b === m)) {
-          edges.splice(j, 2);
-          edges.splice(i, 2);
-          break;
-        }
-      }
-    }
-  }
-
-  Delaunay = {
-    triangulate: function(vertices, key) {
-      var n = vertices.length,
-          i, j, indices, st, open, closed, edges, dx, dy, a, b, c;
-
-      /* Bail if there aren't enough vertices to form any triangles. */
-      if(n < 3)
-        return [];
-
-      /* Slice out the actual vertices from the passed objects. (Duplicate the
-       * array even if we don't, though, since we need to make a supertriangle
-       * later on!) */
-      vertices = vertices.slice(0);
-
-      if(key)
-        for(i = n; i--; )
-          vertices[i] = vertices[i][key];
-
-      /* Make an array of indices into the vertex array, sorted by the
-       * vertices' x-position. */
-      indices = new Array(n);
-
-      for(i = n; i--; )
-        indices[i] = i;
-
-      indices.sort(function(i, j) {
-        return vertices[j][0] - vertices[i][0];
-      });
-
-      /* Next, find the vertices of the supertriangle (which contains all other
-       * triangles), and append them onto the end of a (copy of) the vertex
-       * array. */
-      st = supertriangle(vertices);
-      vertices.push(st[0], st[1], st[2]);
-      
-      /* Initialize the open list (containing the supertriangle and nothing
-       * else) and the closed list (which is empty since we havn't processed
-       * any triangles yet). */
-      open   = [circumcircle(vertices, n + 0, n + 1, n + 2)];
-      closed = [];
-      edges  = [];
-
-      /* Incrementally add each vertex to the mesh. */
-      for(i = indices.length; i--; edges.length = 0) {
-        c = indices[i];
-
-        /* For each open triangle, check to see if the current point is
-         * inside it's circumcircle. If it is, remove the triangle and add
-         * it's edges to an edge list. */
-        for(j = open.length; j--; ) {
-          /* If this point is to the right of this triangle's circumcircle,
-           * then this triangle should never get checked again. Remove it
-           * from the open list, add it to the closed list, and skip. */
-          dx = vertices[c][0] - open[j].x;
-          if(dx > 0.0 && dx * dx > open[j].r) {
-            closed.push(open[j]);
-            open.splice(j, 1);
-            continue;
-          }
-
-          /* If we're outside the circumcircle, skip this triangle. */
-          dy = vertices[c][1] - open[j].y;
-          if(dx * dx + dy * dy - open[j].r > EPSILON)
-            continue;
-
-          /* Remove the triangle and add it's edges to the edge list. */
-          edges.push(
-            open[j].i, open[j].j,
-            open[j].j, open[j].k,
-            open[j].k, open[j].i
-          );
-          open.splice(j, 1);
-        }
-
-        /* Remove any doubled edges. */
-        dedup(edges);
-
-        /* Add a new triangle for each edge. */
-        for(j = edges.length; j; ) {
-          b = edges[--j];
-          a = edges[--j];
-          open.push(circumcircle(vertices, a, b, c));
-        }
-      }
-
-      /* Copy any remaining open triangles to the closed list, and then
-       * remove any triangles that share a vertex with the supertriangle,
-       * building a list of triplets that represent triangles. */
-      for(i = open.length; i--; )
-        closed.push(open[i]);
-      open.length = 0;
-
-      for(i = closed.length; i--; )
-        if(closed[i].i < n && closed[i].j < n && closed[i].k < n)
-          open.push(closed[i].i, closed[i].j, closed[i].k);
-
-      /* Yay, we're done! */
-      return open;
-    },
-    contains: function(tri, p) {
-      /* Bounding box test first, for quick rejections. */
-      if((p[0] < tri[0][0] && p[0] < tri[1][0] && p[0] < tri[2][0]) ||
-         (p[0] > tri[0][0] && p[0] > tri[1][0] && p[0] > tri[2][0]) ||
-         (p[1] < tri[0][1] && p[1] < tri[1][1] && p[1] < tri[2][1]) ||
-         (p[1] > tri[0][1] && p[1] > tri[1][1] && p[1] > tri[2][1]))
-        return null;
-
-      var a = tri[1][0] - tri[0][0],
-          b = tri[2][0] - tri[0][0],
-          c = tri[1][1] - tri[0][1],
-          d = tri[2][1] - tri[0][1],
-          i = a * d - b * c;
-
-      /* Degenerate tri. */
-      if(i === 0.0)
-        return null;
-
-      var u = (d * (p[0] - tri[0][0]) - b * (p[1] - tri[0][1])) / i,
-          v = (a * (p[1] - tri[0][1]) - c * (p[0] - tri[0][0])) / i;
-
-      /* If we're outside the tri, fail. */
-      if(u < 0.0 || v < 0.0 || (u + v) > 1.0)
-        return null;
-
-      return [u, v];
-    }
-  };
-
-  if(typeof module !== "undefined")
-    module.exports = Delaunay;
-})();
-
-////////////////////////////////
-// End of Simple Delaunay Lib //
-////////////////////////////////
-
 this.getMoney = function(){
     var targets = this.findItems();
     var money = {
         bronze: [],
         silver: [],
         gold: [],
-        gems: []
+        gems: [],
+        all: [],
+        total: 0
     };
     for(var i = 0; i < targets.length; i++){
+        targets[i].moneyValue=targets[i].bountyGold?targets[i].bountyGold:targets[i].value
+        money.total+=targets[i].moneyValue
         if (String(targets[i]).includes('Gem')) {
+            targets[i].moneyType="gem"
             money.gems.push(targets[i]);
         }
         if (String(targets[i]).includes('Gold Coin')) {
+            targets[i].moneyType="gold"
             money.gold.push(targets[i]);
         }
         if (String(targets[i]).includes('Silver Coin')) {
+            targets[i].moneyType="silver"
             money.silver.push(targets[i]);
         }
         if (String(targets[i]).includes('Bronze Coin')) {
+            targets[i].moneyType="bronze"
             money.bronze.push(targets[i]);
         }
+        money.all.push(targets[i])
     }
     return money;
 };
 
-function connectionMap(items, triangles){
-  this.items = items;
-  this.triangles = triangles;
-  this.getConnectionsFrom()
+this.getPathToMoney = function(target){
+    //Get Items
+    var items = this.findItems();
+
+    //calculate H values
+    for (var i = items.length - 1; i >= 0; i--) {
+        items[i].astar = {h:items[i].distanceTo(target)/this.maxSpeed()};
+    }
+
+
+};
+
+
+// 82 x 74
+
+// quadtree fun
+function quadtree(plevel, pbounds){
+    if(!pbounds) pbounds = {w:82, h:74};
+    this.level = 0;
+    this.objects = [];
+    this.bounds = pbounds;
+    this.nodes = [];
+};
+
+this.calculateDistanceCost = function(source, target, goal){
+    if(goal){ // 2 way calculation
+        return (source.distanceTo(target) + target.distanceTo(goal)) / (target.moneyValue + goal.moneyValue);
+    } else { // 1 way
+        return source.distanceTo(target) / target.moneyValue;
+    }
+};
+
+this.getMostProfitableDirectMoney = function(money){
+    var closestBronze = this.findNearest(money.bronze);
+    var closestBronzeDist = this.distanceTo(closestBronze);
+    var BronzeScore = closestBronze.moneyValue / closestBronzeDist;
+    var closestSilver = this.findNearest(money.silver);
+    var closestSilverDist = this.distanceTo(closestSilver);
+    var SilverScore = closestSilver.moneyValue / closestSilverDist;
+    var closestGold = this.findNearest(money.gold);
+    var closestGoldDist = this.distanceTo(closestGold);
+    var GoldScore = closestGold.moneyValue / closestGoldDist;
+    var closestGem = this.findNearest(money.gems);
+    var closestGemDist = this.distanceTo(closestGem);
+    var GemScore = closestGem.moneyValue / closestGemDist;
+
+    if(BronzeScore > BronzeScore && BronzeScore > SilverScore && BronzeScore > GoldScore && BronzeScore > GemScore) return closestBronze;
+    if(SilverScore > BronzeScore && SilverScore > SilverScore && SilverScore > GoldScore && SilverScore > GemScore) return closestSilver;
+    if(GoldScore > BronzeScore && GoldScore > SilverScore && GoldScore > GoldScore && GoldScore > GemScore) return closestGold;
+    if(GemScore > BronzeScore && GemScore > SilverScore && GemScore > GoldScore && GemScore > GemScore) return closestGem;
+};
+
+this.getSums = function(money){
+    /*
+    var money = {
+        bronze: [],
+        silver: [],
+        gold: [],
+        gems: []
+    };
+    */
+    //var oneCoinWeight = this.distanceTo(this.findNearest(money.))
+
+    for (var i = money.all.length - 1; i >= 0; i--) {
+        money.all[i].others = {};
+        for (var ii = money.all.length - 1; ii >= 0; ii--) {
+            if(ii!=i)
+                money.all[i].others.distance += money.all[i].distanceTo(money.all[ii]);
+        }
+        money.all[i].others.score = money.all[i].others.distance / money.total;
+        money.all[i].weight =  this.distanceTo(money.all[i]) / money.all[i].others.score;
+        money.all[i].score = this.distanceTo(money.all[i]) / money.all[i].moneyValue;
+        this.say("v: "+money.all[i].moneyValue+" d: "+this.distanceTo(money.all[i])+"os: "+money.all[i].others.score+" w: "+money.all[i].weight+" s: "+money.all[i].score)
+        //money.all[i].others.score = this.calculateDistanceCost(money.all[i],money.all[ii])
+    }
+    return money;
+};
+
+
+
+
+//
+//soldier
+//  Cost: 20
+//  DPS Pergold: 0.6
+//  Health: 200
+//  Attack: 6
+//  Cool Down: 0.5s
+//  Attack Range: 3m
+//  Attack DPS: 12
+//  Move: 6m/s
+//  Acceleration: 100m/s^2
+//  Move Type: Running
+//archer
+//  Cost: 25
+//  DPS Pergold: 1.04
+//  Health: 30
+//  Move Type: Running
+//  Move: 9 m/s
+//  Acceleration: 100m/s^2
+//  Attack: 13
+//  Attack Range: 25m
+//  Cool Down: 0.5s
+//  Attack DPS: 26
+//griffin-rider
+//  Cost: 50
+//  DPS Pergold: 0.8
+//  Health: 160
+//  Move Type: Flying
+//  Move: 20m/s
+//  Acceleration: 100m/s^2
+//  Attack: 20
+//  Attack Range: 20m
+//  Cool Down: 0.5s
+//  Attack DPS: 40
+//peasant
+//  Cost: 50
+//  DPS Pergold: 
+//  Health: 5.5
+//  Move Type: running
+//  Move: 8m/s
+//  Acceleration: 100m/s^2
+//  Attack:
+//  Attack Range: m
+//  Cool Down: s
+//  Attack DPS: none
+//  Can Build: fire-trap for free, decoy for 25g, and palisades for 15g
+//paladin
+//  Cost: 80
+//  DPS Pergold: 0.625
+//  Health: 600
+//  Move Type: running
+//  Move: 8m/s
+//  Acceleration: 100m/s^2
+//  Attack: 20
+//  Attack Range: 3m
+//  Cool Down: 5s
+//  Attack DPS: 50
+//  Can auto heal targets cooldown 0.5s 30m 150hp, HPS 250hp
+//artillery
+//  Cost: 75
+//  DPS Pergold: 0.925866
+//  Health: 100
+//  Move Type: rolling
+//  Move: 4m/s
+//  Acceleration: 100m/s^2
+//  Attack: 250
+//  Attack Range: 65m
+//  Cool Down: 3.6s
+//  Attack DPS: 69.44
+
+
+var summonRotation = ["soldier","soldier","soldier","soldier","soldier",
+    "archer","archer", "griffin-rider","archer","archer","archer","archer","archer","archer",
+    "griffin-rider", "paladin"]
+
+this.summonStuff = function(stage, rotation){
+    var nextSummon = rotation[stage % rotation.length];
+
+    if(this.gold - 20 > this.costOf(nextSummon) * 5)
+    while(this.gold - 20 > this.costOf(nextSummon)){
+        this.summon(nextSummon);
+        stage++;
+        nextSummon = rotation[stage % rotation.length];
+    }
+    return stage;
 }
 
-this.getItemMesh(){
-  var items = this.findItems();
-  var itemVerts = [];
-  for (var i = 0; i < items.length; i++) {
-    itemVerts.push([items[i].pos.x,items[i].pos.y]);
-  }
-
-  var triangles = Delaunay.triangulate(vertices);
-
-  for (var i = 0; i < triangles.length; i++) {
-    items[i]
-  };
-  
-  for(var i = triangles.length; i >= 0; ) {
-    ctx.beginPath();
-    --i;
-    ctx.moveTo(vertices[triangles[i]][0], vertices[triangles[i]][1]);
-    --i;
-    ctx.lineTo(vertices[triangles[i]][0], vertices[triangles[i]][1]);
-    --i;
-    ctx.lineTo(vertices[triangles[i]][0], vertices[triangles[i]][1]);
-    ctx.closePath();
-    ctx.stroke();
-  }
-}
-
+var summons = 0;
 // Defeat the enemy hero in two minutes.
 loop {
     var enemies = this.findEnemies();
     var nearestEnemy = this.findNearest(enemies);
     
+
     // Your hero can collect coins and summon troops.
-    while (this.gold > this.costOf("soldier")) {
+    summons = this.summonStuff(summons, summonRotation);
+    /*
+    while (this.gold - 20 > this.costOf("soldier")) {
         this.summon("soldier");
+        summons++;
     }
-
-    if(hero.findCorpses().length>0 && hero.canCast("raise-dead", hero.findCorpses()[hero.findCorpses().length-1])){
-        hero.cast("raise-dead", hero.findCorpses()[hero.findCorpses().length-1]);
-    }
-
+    */
+    
     // She also commands your allies in battle.
     var friends = this.findFriends();
     var enemeyTarget = null;
@@ -415,8 +319,25 @@ loop {
 
     
     
+    //var money = this.getSums(this.getMoney());
     var money = this.getMoney();
-    //this.say(targets[targets.length-1]);
+    //this.say(targets[targets.length-1]);money.all[i].weight
+    var moneyTarget = this.getMostProfitableDirectMoney(money);
+    //this.say("M"+money.all.length);
+    /*
+    for (var mi = money.all.length - 1; mi >= 0; mi--) {
+        if(moneyTarget === null || money.all[mi].score < moneyTarget.score){
+            moneyTarget = money.all[mi];
+        }
+    }
+    */
+    if(moneyTarget === null){
+        this.say("Can't Find Money");
+    } else {
+        this.moveXY(moneyTarget.pos.x, moneyTarget.pos.y);
+    }
+
+    /*
     var moneyTarget = this.findNearest(money.gems);
     if(moneyTarget){
         this.moveXY(moneyTarget.pos.x, moneyTarget.pos.y);
@@ -438,4 +359,5 @@ loop {
             }
         }
     }
+    */
 }
